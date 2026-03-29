@@ -1,9 +1,11 @@
 "use client"
 
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useState, useCallback, useRef } from "react"
 import { useParams, useSearchParams } from "next/navigation"
-import BookReader from "@/components/book-reader"
+import BookReader, { type BookReaderHandle } from "@/components/book-reader"
 import { PasswordModal } from "@/components/password-modal"
+import NavigationOverlay from "@/components/navigation-overlay"
+import ThumbnailModal from "@/components/thumbnail-modal"
 import { getBrochureBySlug } from "@/lib/brochure-store"
 import { getMediaUrl } from "@/lib/media-store"
 import type { Brochure, ImageContent } from "@/lib/types"
@@ -19,6 +21,11 @@ export default function BrochureReaderPage() {
   const [showPasswordModal, setShowPasswordModal] = useState(false)
   const [mediaUrls, setMediaUrls] = useState<Record<string, string>>({})
   const [mediaReady, setMediaReady] = useState(false)
+  const [currentPageIndex, setCurrentPageIndex] = useState(0)
+  const [thumbnailModalOpen, setThumbnailModalOpen] = useState(false)
+
+  const bookRef = useRef<BookReaderHandle>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
 
   /* ---------- load brochure ---------- */
 
@@ -125,6 +132,75 @@ export default function BrochureReaderPage() {
     setShowPasswordModal(false)
   }, [])
 
+  /* ---------- page change handler ---------- */
+
+  const handlePageChange = useCallback((pageIndex: number) => {
+    setCurrentPageIndex(pageIndex)
+  }, [])
+
+  /* ---------- navigation callbacks ---------- */
+
+  const totalPages = brochure ? brochure.spreads.length * 2 : 0
+  const currentSpreadIndex = Math.floor(currentPageIndex / 2)
+
+  const handlePrev = useCallback(() => {
+    bookRef.current?.flipPrev()
+  }, [])
+
+  const handleNext = useCallback(() => {
+    bookRef.current?.flipNext()
+  }, [])
+
+  const handleCover = useCallback(() => {
+    bookRef.current?.flipToPage(0)
+  }, [])
+
+  const handleViewAll = useCallback(() => {
+    setThumbnailModalOpen(true)
+  }, [])
+
+  const handleSelectSpread = useCallback((spreadIndex: number) => {
+    bookRef.current?.flipToPage(spreadIndex * 2)
+    setThumbnailModalOpen(false)
+  }, [])
+
+  /* ---------- keyboard listeners ---------- */
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
+    function handleKeyDown(e: KeyboardEvent) {
+      switch (e.key) {
+        case "ArrowLeft":
+          if (currentPageIndex > 1) {
+            bookRef.current?.flipPrev()
+          }
+          break
+        case "ArrowRight":
+          bookRef.current?.flipNext()
+          break
+        case "Home":
+          bookRef.current?.flipToPage(0)
+          break
+        case "Escape":
+          setThumbnailModalOpen(false)
+          break
+      }
+    }
+
+    el.addEventListener("keydown", handleKeyDown)
+    return () => el.removeEventListener("keydown", handleKeyDown)
+  }, [currentPageIndex])
+
+  /* ---------- auto-focus reader container on mount ---------- */
+
+  useEffect(() => {
+    if (unlocked && mediaReady) {
+      containerRef.current?.focus()
+    }
+  }, [unlocked, mediaReady])
+
   /* ---------- render ---------- */
 
   if (loading) {
@@ -153,13 +229,40 @@ export default function BrochureReaderPage() {
         onUnlocked={handleUnlocked}
       />
 
-      {/* Book reader */}
+      {/* Book reader with navigation overlay */}
       {unlocked && mediaReady && brochure && (
-        <BookReader
-          brochure={brochure}
-          initialPage={initialPage}
-          mediaUrls={mediaUrls}
-        />
+        <>
+          <div
+            ref={containerRef}
+            tabIndex={0}
+            className="relative w-full h-screen outline-none"
+          >
+            <BookReader
+              ref={bookRef}
+              brochure={brochure}
+              initialPage={initialPage}
+              mediaUrls={mediaUrls}
+              onPageChange={handlePageChange}
+            />
+            <NavigationOverlay
+              currentPageIndex={currentPageIndex}
+              totalPages={totalPages}
+              onPrev={handlePrev}
+              onNext={handleNext}
+              onCover={handleCover}
+              onViewAll={handleViewAll}
+            />
+          </div>
+
+          <ThumbnailModal
+            spreads={brochure.spreads}
+            currentSpreadIndex={currentSpreadIndex}
+            mediaUrls={mediaUrls}
+            open={thumbnailModalOpen}
+            onOpenChange={setThumbnailModalOpen}
+            onSelectSpread={handleSelectSpread}
+          />
+        </>
       )}
     </div>
   )
