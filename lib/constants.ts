@@ -1,7 +1,7 @@
 export const CANVAS_WIDTH = 1440
-export const CANVAS_HEIGHT = 812
+export const CANVAS_HEIGHT = 810 // 16:9 ratio
 export const PAGE_WIDTH = 720
-export const PAGE_HEIGHT = 812
+export const PAGE_HEIGHT = 810 // 16:9 ratio
 export const GRID_SIZE = 20
 export const AUTOSAVE_INTERVAL_MS = 30_000
 export const SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000 // 24 hours

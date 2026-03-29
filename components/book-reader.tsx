@@ -7,101 +7,62 @@ import React, {
   useRef,
   useState,
 } from "react"
-// @ts-ignore -- react-pageflip has incomplete type declarations
-import HTMLFlipBook from "react-pageflip"
-import PageRenderer from "@/components/page-renderer"
-import { PAGE_WIDTH, PAGE_HEIGHT, CANVAS_WIDTH, CANVAS_HEIGHT } from "@/lib/constants"
-import type { Brochure, Spread } from "@/lib/types"
+import SpreadRenderer from "@/components/spread-renderer"
+import { CANVAS_WIDTH, CANVAS_HEIGHT } from "@/lib/constants"
+import type { Brochure } from "@/lib/types"
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-interface FlatPage {
-  spread: Spread
-  side: "left" | "right"
-}
-
 export interface BookReaderHandle {
   flipNext: () => void
   flipPrev: () => void
-  flipToPage: (pageIndex: number) => void
-  getCurrentPage: () => number
+  flipToSpread: (spreadIndex: number) => void
+  getCurrentSpread: () => number
 }
 
 interface BookReaderProps {
   brochure: Brochure
-  initialPage?: number
+  initialSpread?: number
   mediaUrls: Record<string, string>
-  onPageChange?: (pageIndex: number) => void
+  onSpreadChange?: (spreadIndex: number) => void
 }
 
 /* ------------------------------------------------------------------ */
-/*  Single page wrapper — must be forwardRef for react-pageflip        */
-/* ------------------------------------------------------------------ */
-
-const FlipPage = React.forwardRef<
-  HTMLDivElement,
-  { spread: Spread; side: "left" | "right"; mediaUrls: Record<string, string> }
->(function FlipPage({ spread, side, mediaUrls }, ref) {
-  return (
-    <PageRenderer
-      ref={ref}
-      spread={spread}
-      side={side}
-      mediaUrls={mediaUrls}
-    />
-  )
-})
-
-FlipPage.displayName = "FlipPage"
-
-/* ------------------------------------------------------------------ */
-/*  BookReader                                                         */
+/*  BookReader — custom spread viewer with CSS transitions             */
 /* ------------------------------------------------------------------ */
 
 const BookReader = React.forwardRef<BookReaderHandle, BookReaderProps>(
-  function BookReader({ brochure, initialPage, mediaUrls, onPageChange }, ref) {
-    const flipBookRef = useRef<any>(null)
+  function BookReader({ brochure, initialSpread = 0, mediaUrls, onSpreadChange }, ref) {
     const containerRef = useRef<HTMLDivElement>(null)
+    const [currentSpread, setCurrentSpread] = useState(initialSpread)
+    const [isAnimating, setIsAnimating] = useState(false)
+    const [direction, setDirection] = useState<"next" | "prev" | null>(null)
     const [scale, setScale] = useState(1)
-    const [currentPage, setCurrentPage] = useState(0)
-    const [flippingTime, setFlippingTime] = useState(800)
+    const reducedMotion = useRef(false)
+
+    const totalSpreads = brochure.spreads.length
 
     /* ---------- prefers-reduced-motion ---------- */
 
     useEffect(() => {
       const mq = window.matchMedia("(prefers-reduced-motion: reduce)")
-      if (mq.matches) {
-        setFlippingTime(0)
-      }
-      const handler = (e: MediaQueryListEvent) => {
-        setFlippingTime(e.matches ? 0 : 800)
-      }
+      reducedMotion.current = mq.matches
+      const handler = (e: MediaQueryListEvent) => { reducedMotion.current = e.matches }
       mq.addEventListener("change", handler)
       return () => mq.removeEventListener("change", handler)
     }, [])
 
-    /* ---------- flatten spreads into individual pages ---------- */
-
-    const flatPages: FlatPage[] = React.useMemo(() => {
-      const pages: FlatPage[] = []
-      for (const spread of brochure.spreads) {
-        pages.push({ spread, side: "left" })
-        pages.push({ spread, side: "right" })
-      }
-      return pages
-    }, [brochure.spreads])
-
-    /* ---------- scale calculation ---------- */
+    /* ---------- responsive scale ---------- */
 
     const recalcScale = useCallback(() => {
       const el = containerRef.current
       if (!el) return
-      const containerWidth = el.clientWidth
-      const containerHeight = el.clientHeight
-      // The book shows two pages side by side → total width = CANVAS_WIDTH
-      const s = Math.min(containerWidth / CANVAS_WIDTH, containerHeight / CANVAS_HEIGHT)
+      const padding = 32 // min margin around the book
+      const availW = el.clientWidth - padding * 2
+      const availH = el.clientHeight - padding * 2
+      const s = Math.min(availW / CANVAS_WIDTH, availH / CANVAS_HEIGHT, 1)
       setScale(s)
     }, [])
 
@@ -111,44 +72,86 @@ const BookReader = React.forwardRef<BookReaderHandle, BookReaderProps>(
       return () => window.removeEventListener("resize", recalcScale)
     }, [recalcScale])
 
-    /* ---------- initial page ---------- */
+    /* ---------- navigation ---------- */
 
-    useEffect(() => {
-      if (initialPage != null && initialPage > 0) {
-        // react-pageflip needs a tick to initialise before we can flip
-        const timer = setTimeout(() => {
-          flipBookRef.current?.pageFlip()?.flip(initialPage)
-        }, 100)
-        return () => clearTimeout(timer)
+    const goToSpread = useCallback((index: number, dir: "next" | "prev") => {
+      if (isAnimating) return
+      if (index < 0 || index >= totalSpreads) return
+
+      if (reducedMotion.current) {
+        setCurrentSpread(index)
+        onSpreadChange?.(index)
+        return
       }
-    }, [initialPage])
+
+      setDirection(dir)
+      setIsAnimating(true)
+
+      setTimeout(() => {
+        setCurrentSpread(index)
+        onSpreadChange?.(index)
+        setDirection(null)
+        setIsAnimating(false)
+      }, 500) // match CSS transition duration
+    }, [isAnimating, totalSpreads, onSpreadChange])
 
     /* ---------- imperative handle ---------- */
 
     useImperativeHandle(ref, () => ({
       flipNext() {
-        flipBookRef.current?.pageFlip()?.flipNext()
+        if (currentSpread >= totalSpreads - 1) {
+          // Wrap to cover
+          goToSpread(0, "next")
+        } else {
+          goToSpread(currentSpread + 1, "next")
+        }
       },
       flipPrev() {
-        flipBookRef.current?.pageFlip()?.flipPrev()
+        if (currentSpread > 0) {
+          goToSpread(currentSpread - 1, "prev")
+        }
       },
-      flipToPage(pageIndex: number) {
-        flipBookRef.current?.pageFlip()?.flip(pageIndex)
+      flipToSpread(index: number) {
+        if (index === currentSpread) return
+        goToSpread(index, index > currentSpread ? "next" : "prev")
       },
-      getCurrentPage() {
-        return currentPage
+      getCurrentSpread() {
+        return currentSpread
       },
     }))
 
-    /* ---------- onFlip ---------- */
+    /* ---------- swipe support ---------- */
 
-    const handleFlip = useCallback(
-      (e: { data: number }) => {
-        setCurrentPage(e.data)
-        onPageChange?.(e.data)
-      },
-      [onPageChange],
-    )
+    const touchStartX = useRef(0)
+
+    const handleTouchStart = useCallback((e: React.TouchEvent) => {
+      touchStartX.current = e.touches[0].clientX
+    }, [])
+
+    const handleTouchEnd = useCallback((e: React.TouchEvent) => {
+      const delta = e.changedTouches[0].clientX - touchStartX.current
+      if (Math.abs(delta) > 50) {
+        if (delta < 0) {
+          // Swipe left → next
+          if (currentSpread >= totalSpreads - 1) {
+            goToSpread(0, "next")
+          } else {
+            goToSpread(currentSpread + 1, "next")
+          }
+        } else {
+          // Swipe right → prev
+          if (currentSpread > 0) {
+            goToSpread(currentSpread - 1, "prev")
+          }
+        }
+      }
+    }, [currentSpread, totalSpreads, goToSpread])
+
+    /* ---------- animation class ---------- */
+
+    let animationClass = ""
+    if (direction === "next") animationClass = "animate-flip-next"
+    if (direction === "prev") animationClass = "animate-flip-prev"
 
     /* ---------- render ---------- */
 
@@ -156,35 +159,49 @@ const BookReader = React.forwardRef<BookReaderHandle, BookReaderProps>(
       <div
         ref={containerRef}
         className="flex items-center justify-center w-full h-full"
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
       >
         <div
+          className="relative"
           style={{
+            width: CANVAS_WIDTH,
+            height: CANVAS_HEIGHT,
             transform: `scale(${scale})`,
             transformOrigin: "center center",
           }}
         >
-          {/* @ts-ignore — react-pageflip JSX type issues */}
-          <HTMLFlipBook
-            ref={flipBookRef}
-            width={PAGE_WIDTH}
-            height={PAGE_HEIGHT}
-            showCover={true}
-            flippingTime={flippingTime}
-            useMouseEvents={true}
-            swipeDistance={30}
-            maxShadowOpacity={0.5}
-            onFlip={handleFlip}
+          {/* Current spread */}
+          <div
+            className={`absolute inset-0 transition-transform transition-opacity duration-500 ease-in-out ${animationClass}`}
+            style={{ perspective: "1200px" }}
           >
-            {flatPages.map((page, idx) => (
-              <FlipPage
-                key={`${page.spread.id}-${page.side}-${idx}`}
-                spread={page.spread}
-                side={page.side}
-                mediaUrls={mediaUrls}
-              />
-            ))}
-          </HTMLFlipBook>
+            <SpreadRenderer
+              spread={brochure.spreads[currentSpread]}
+              mediaUrls={mediaUrls}
+            />
+          </div>
         </div>
+
+        {/* CSS animations for page flip effect */}
+        <style jsx>{`
+          .animate-flip-next {
+            animation: flipNext 500ms ease-in-out;
+          }
+          .animate-flip-prev {
+            animation: flipPrev 500ms ease-in-out;
+          }
+          @keyframes flipNext {
+            0% { transform: rotateY(0deg); opacity: 1; }
+            50% { transform: rotateY(-90deg); opacity: 0.5; }
+            100% { transform: rotateY(0deg); opacity: 1; }
+          }
+          @keyframes flipPrev {
+            0% { transform: rotateY(0deg); opacity: 1; }
+            50% { transform: rotateY(90deg); opacity: 0.5; }
+            100% { transform: rotateY(0deg); opacity: 1; }
+          }
+        `}</style>
       </div>
     )
   },

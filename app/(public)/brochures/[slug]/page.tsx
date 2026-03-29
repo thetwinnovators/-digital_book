@@ -21,7 +21,7 @@ export default function BrochureReaderPage() {
   const [showPasswordModal, setShowPasswordModal] = useState(false)
   const [mediaUrls, setMediaUrls] = useState<Record<string, string>>({})
   const [mediaReady, setMediaReady] = useState(false)
-  const [currentPageIndex, setCurrentPageIndex] = useState(0)
+  const [currentSpreadIndex, setCurrentSpreadIndex] = useState(0)
   const [thumbnailModalOpen, setThumbnailModalOpen] = useState(false)
 
   const bookRef = useRef<BookReaderHandle>(null)
@@ -45,7 +45,6 @@ export default function BrochureReaderPage() {
 
       setBrochure(b)
 
-      // Check session unlock
       const isUnlocked = sessionStorage.getItem("unlocked:" + b.id) === "true"
       if (isUnlocked) {
         setUnlocked(true)
@@ -57,9 +56,7 @@ export default function BrochureReaderPage() {
     }
 
     load()
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelled = true }
   }, [slug])
 
   /* ---------- resolve all media URLs ---------- */
@@ -71,7 +68,6 @@ export default function BrochureReaderPage() {
     const urls: Record<string, string> = {}
 
     async function resolveMedia() {
-      // Collect all unique media ids
       const ids = new Set<string>()
 
       for (const spread of brochure!.spreads) {
@@ -87,7 +83,6 @@ export default function BrochureReaderPage() {
         }
       }
 
-      // Resolve each id to an object URL
       await Promise.all(
         Array.from(ids).map(async (id) => {
           const url = await getMediaUrl(id)
@@ -96,7 +91,6 @@ export default function BrochureReaderPage() {
       )
 
       if (cancelled) {
-        // Revoke if we got cancelled before setting state
         Object.values(urls).forEach((u) => URL.revokeObjectURL(u))
         return
       }
@@ -109,39 +103,33 @@ export default function BrochureReaderPage() {
 
     return () => {
       cancelled = true
-      // Revoke all object URLs on unmount
       Object.values(urls).forEach((u) => URL.revokeObjectURL(u))
     }
   }, [brochure, unlocked])
 
-  /* ---------- deep-link page calculation ---------- */
+  /* ---------- deep-link: ?page=N → spread index ---------- */
 
-  const initialPage = (() => {
+  const initialSpread = (() => {
     const pageParam = searchParams.get("page")
     if (!pageParam) return 0
     const pageNum = parseInt(pageParam, 10)
     if (isNaN(pageNum) || pageNum <= 0) return 0
-    const spreadIdx = Math.ceil(pageNum / 2)
-    return spreadIdx * 2
+    // Page label N lives on spread ceil(N/2)
+    return Math.ceil(pageNum / 2)
   })()
 
-  /* ---------- password unlock handler ---------- */
+  /* ---------- handlers ---------- */
 
   const handleUnlocked = useCallback(() => {
     setUnlocked(true)
     setShowPasswordModal(false)
   }, [])
 
-  /* ---------- page change handler ---------- */
-
-  const handlePageChange = useCallback((pageIndex: number) => {
-    setCurrentPageIndex(pageIndex)
+  const handleSpreadChange = useCallback((spreadIndex: number) => {
+    setCurrentSpreadIndex(spreadIndex)
   }, [])
 
-  /* ---------- navigation callbacks ---------- */
-
-  const totalPages = brochure ? brochure.spreads.length * 2 : 0
-  const currentSpreadIndex = Math.floor(currentPageIndex / 2)
+  const totalSpreads = brochure ? brochure.spreads.length : 0
 
   const handlePrev = useCallback(() => {
     bookRef.current?.flipPrev()
@@ -152,7 +140,7 @@ export default function BrochureReaderPage() {
   }, [])
 
   const handleCover = useCallback(() => {
-    bookRef.current?.flipToPage(0)
+    bookRef.current?.flipToSpread(0)
   }, [])
 
   const handleViewAll = useCallback(() => {
@@ -160,7 +148,7 @@ export default function BrochureReaderPage() {
   }, [])
 
   const handleSelectSpread = useCallback((spreadIndex: number) => {
-    bookRef.current?.flipToPage(spreadIndex * 2)
+    bookRef.current?.flipToSpread(spreadIndex)
     setThumbnailModalOpen(false)
   }, [])
 
@@ -173,15 +161,13 @@ export default function BrochureReaderPage() {
     function handleKeyDown(e: KeyboardEvent) {
       switch (e.key) {
         case "ArrowLeft":
-          if (currentPageIndex > 1) {
-            bookRef.current?.flipPrev()
-          }
+          if (currentSpreadIndex > 0) bookRef.current?.flipPrev()
           break
         case "ArrowRight":
           bookRef.current?.flipNext()
           break
         case "Home":
-          bookRef.current?.flipToPage(0)
+          bookRef.current?.flipToSpread(0)
           break
         case "Escape":
           setThumbnailModalOpen(false)
@@ -191,9 +177,9 @@ export default function BrochureReaderPage() {
 
     el.addEventListener("keydown", handleKeyDown)
     return () => el.removeEventListener("keydown", handleKeyDown)
-  }, [currentPageIndex])
+  }, [currentSpreadIndex])
 
-  /* ---------- auto-focus reader container on mount ---------- */
+  /* ---------- auto-focus ---------- */
 
   useEffect(() => {
     if (unlocked && mediaReady) {
@@ -221,7 +207,6 @@ export default function BrochureReaderPage() {
 
   return (
     <div className="bg-zinc-950 min-h-screen flex items-center justify-center">
-      {/* Password gate */}
       <PasswordModal
         brochure={brochure}
         open={showPasswordModal}
@@ -229,7 +214,6 @@ export default function BrochureReaderPage() {
         onUnlocked={handleUnlocked}
       />
 
-      {/* Book reader with navigation overlay */}
       {unlocked && mediaReady && brochure && (
         <>
           <div
@@ -240,13 +224,14 @@ export default function BrochureReaderPage() {
             <BookReader
               ref={bookRef}
               brochure={brochure}
-              initialPage={initialPage}
+              initialSpread={initialSpread}
               mediaUrls={mediaUrls}
-              onPageChange={handlePageChange}
+              onSpreadChange={handleSpreadChange}
             />
             <NavigationOverlay
-              currentPageIndex={currentPageIndex}
-              totalPages={totalPages}
+              currentSpreadIndex={currentSpreadIndex}
+              totalSpreads={totalSpreads}
+              spreads={brochure.spreads}
               onPrev={handlePrev}
               onNext={handleNext}
               onCover={handleCover}

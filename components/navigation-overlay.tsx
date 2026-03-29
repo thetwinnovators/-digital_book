@@ -3,10 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { ChevronLeft, ChevronRight, Home, LayoutGrid } from "lucide-react"
 import { NAV_OVERLAY_TIMEOUT_MS } from "@/lib/constants"
+import type { Spread } from "@/lib/types"
 
 interface NavigationOverlayProps {
-  currentPageIndex: number
-  totalPages: number
+  currentSpreadIndex: number
+  totalSpreads: number
+  spreads: Spread[]
   onPrev: () => void
   onNext: () => void
   onCover: () => void
@@ -14,8 +16,9 @@ interface NavigationOverlayProps {
 }
 
 export default function NavigationOverlay({
-  currentPageIndex,
-  totalPages,
+  currentSpreadIndex,
+  totalSpreads,
+  spreads,
   onPrev,
   onNext,
   onCover,
@@ -25,20 +28,14 @@ export default function NavigationOverlay({
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const resetTimeout = useCallback(() => {
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current)
-    }
+    if (timeoutRef.current) clearTimeout(timeoutRef.current)
     setVisible(true)
-    timeoutRef.current = setTimeout(() => {
-      setVisible(false)
-    }, NAV_OVERLAY_TIMEOUT_MS)
+    timeoutRef.current = setTimeout(() => setVisible(false), NAV_OVERLAY_TIMEOUT_MS)
   }, [])
 
   useEffect(() => {
     return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current)
-      }
+      if (timeoutRef.current) clearTimeout(timeoutRef.current)
     }
   }, [])
 
@@ -46,17 +43,15 @@ export default function NavigationOverlay({
     resetTimeout()
   }, [resetTimeout])
 
-  // Build page indicator text
-  const isCover = currentPageIndex <= 1
+  const isCover = currentSpreadIndex === 0
+  const currentSpread = spreads[currentSpreadIndex]
   let pageLabel: string
   if (isCover) {
     pageLabel = "Cover"
+  } else if (currentSpread) {
+    pageLabel = `Pages ${currentSpread.leftPageLabel}-${currentSpread.rightPageLabel} of ${(totalSpreads - 1) * 2}`
   } else {
-    // currentPageIndex is 0-based flat page index
-    // Pages are shown in pairs (spreads). Left page number = currentPageIndex, right = currentPageIndex + 1
-    const leftNum = currentPageIndex
-    const rightNum = currentPageIndex + 1
-    pageLabel = `Pages ${leftNum}-${rightNum} of ${totalPages}`
+    pageLabel = ""
   }
 
   return (
@@ -66,7 +61,6 @@ export default function NavigationOverlay({
       onFocus={handleInteraction}
       onTouchStart={handleInteraction}
     >
-      {/* Bottom navigation bar */}
       <div
         className={`absolute bottom-6 left-1/2 -translate-x-1/2 transition-opacity duration-300 ${
           visible ? "opacity-100" : "opacity-0 pointer-events-none"
@@ -78,7 +72,7 @@ export default function NavigationOverlay({
             onClick={onPrev}
             disabled={isCover}
             className="pointer-events-auto text-white disabled:text-zinc-500 hover:text-zinc-300 transition-colors"
-            aria-label="Previous page"
+            aria-label="Previous spread"
           >
             <ChevronLeft className="h-5 w-5" />
           </button>
@@ -91,7 +85,7 @@ export default function NavigationOverlay({
             type="button"
             onClick={onNext}
             className="pointer-events-auto text-white hover:text-zinc-300 transition-colors"
-            aria-label="Next page"
+            aria-label="Next spread"
           >
             <ChevronRight className="h-5 w-5" />
           </button>

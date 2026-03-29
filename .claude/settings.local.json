@@ -4,7 +4,23 @@
       "Bash(npx create-next-app@latest . --typescript --tailwind --eslint --app --src-dir=false --import-alias=\"@/*\" --turbopack --yes)",
       "Bash(npx create-next-app@latest digital-book --typescript --tailwind --eslint --app --src-dir=false --import-alias=\"@/*\" --turbopack --yes)",
       "Bash(npm install:*)",
-      "Bash(npx shadcn@latest init --yes --defaults)"
+      "Bash(npx shadcn@latest init --yes --defaults)",
+      "Bash(npx shadcn@latest add button dialog input card dropdown-menu tooltip alert-dialog badge separator scroll-area sheet --yes)",
+      "Bash(timeout 20 npm run dev)",
+      "Bash(npm run:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(npx tsc:*)",
+      "Bash(ls /c/Users/JenoU/Desktop/Digital_Book/app/\\\\\\(public\\\\\\))",
+      "Bash(ls /c/Users/JenoU/Desktop/Digital_Book/app/\\\\\\(admin\\\\\\))",
+      "Bash(git init:*)",
+      "Bash(ls \"C:/Users/JenoU/Desktop/Digital_Book/app/\\(public\\)/\")",
+      "Bash(ls \"C:/Users/JenoU/Desktop/Digital_Book/app/\\(admin\\)/\")",
+      "Bash(ls \"C:/Users/JenoU/Desktop/Digital_Book/app/\\(admin\\)/sign-in/\")",
+      "Bash(ls C:/Users/JenoU/Desktop/Digital_Book/app/\\\\\\(public\\\\\\)/search/)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(npx next:*)",
+      "mcp__Claude_Preview__preview_start"
     ]
   }
 }
