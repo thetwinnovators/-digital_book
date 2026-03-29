@@ -13,18 +13,31 @@ import {
   Palette,
   Undo2,
   Redo2,
+  Plus,
+  X,
+  Settings,
+  Check,
 } from "lucide-react"
 import { isAuthenticated } from "@/lib/auth"
-import { getBrochureById, saveBrochure } from "@/lib/brochure-store"
-import { getMediaUrl, saveMedia, validateImageFile } from "@/lib/media-store"
-import { generateId } from "@/lib/utils"
+import { getBrochureById, saveBrochure, getIndex } from "@/lib/brochure-store"
+import { getMediaUrl, saveMedia, validateImageFile, deleteMedia } from "@/lib/media-store"
+import { generateId, generatePageLabels, slugify, hashPassword } from "@/lib/utils"
 import { extractSearchText } from "@/lib/search"
 import { AUTOSAVE_INTERVAL_MS } from "@/lib/constants"
-import type { Brochure, BrochureElement, ImageContent, TextContent } from "@/lib/types"
+import type { Brochure, BrochureElement, ImageContent, Spread, TextContent } from "@/lib/types"
 import EditorCanvas from "@/components/editor/editor-canvas"
 import Toolbar from "@/components/editor/toolbar"
 import LayerPanel from "@/components/editor/layer-panel"
+import SpreadStrip from "@/components/editor/spread-strip"
 import { HistoryManager } from "@/components/editor/history"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog"
 
 export default function EditorPage() {
   const params = useParams()
@@ -42,6 +55,24 @@ export default function EditorPage() {
   const historyRef = useRef(new HistoryManager())
   const isDirtyRef = useRef(false)
   const [saveStatus, setSaveStatus] = useState<"saved" | "unsaved">("saved")
+
+  // Backgrounds section open/close
+  const [bgSectionOpen, setBgSectionOpen] = useState(false)
+
+  // Settings dialog state
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsTitle, setSettingsTitle] = useState("")
+  const [settingsSlug, setSettingsSlug] = useState("")
+  const [settingsSlugManual, setSettingsSlugManual] = useState(false)
+  const [settingsDescription, setSettingsDescription] = useState("")
+  const [settingsPassword, setSettingsPassword] = useState("")
+  const [settingsHasPassword, setSettingsHasPassword] = useState(false)
+  const [settingsSlugError, setSettingsSlugError] = useState("")
+
+  // Background file input refs
+  const leftBgInputRef = useRef<HTMLInputElement>(null)
+  const rightBgInputRef = useRef<HTMLInputElement>(null)
+  const fullBgInputRef = useRef<HTMLInputElement>(null)
 
   const markDirty = useCallback(() => {
     isDirtyRef.current = true
@@ -729,17 +760,6 @@ export default function EditorPage() {
   }, [brochure, selectedElementId, currentSpreadIndex, markDirty, forceRender])
 
   // --- Object-fit selector for image elements ---
-  const handleObjectFitChange = useCallback(
-    (fit: "cover" | "contain" | "fill") => {
-      if (!selectedElementId) return
-      handleUpdateElement(selectedElementId, {
-        content: { mediaId: "", objectFit: fit } as ImageContent,
-      })
-    },
-    [selectedElementId, handleUpdateElement]
-  )
-
-  // We need a better approach for object-fit: update just the content field
   const handleImageObjectFit = useCallback(
     (fit: "cover" | "contain" | "fill") => {
       if (!brochure || !selectedElementId) return
@@ -753,6 +773,220 @@ export default function EditorPage() {
     },
     [brochure, selectedElementId, currentSpreadIndex, handleUpdateElement]
   )
+
+  // --- Spread management ---
+  const handleAddSpread = useCallback(() => {
+    setBrochure((prev) => {
+      if (!prev) return prev
+      const newIndex = prev.spreads.length
+      const labels = generatePageLabels(newIndex)
+      const newSpread: Spread = {
+        id: generateId(),
+        spreadIndex: newIndex,
+        leftPageLabel: labels.left,
+        rightPageLabel: labels.right,
+        leftBackgroundMediaId: null,
+        rightBackgroundMediaId: null,
+        fullSpreadBackgroundMediaId: null,
+        elements: [],
+      }
+      // Regenerate all page labels
+      const newSpreads = [...prev.spreads, newSpread].map((s, i) => {
+        const l = generatePageLabels(i)
+        return { ...s, spreadIndex: i, leftPageLabel: l.left, rightPageLabel: l.right }
+      })
+      markDirty()
+      return { ...prev, spreads: newSpreads }
+    })
+  }, [markDirty])
+
+  const handleRemoveSpread = useCallback(
+    (index: number) => {
+      if (index === 0) return // cannot remove cover
+      if (!brochure) return
+      const spread = brochure.spreads[index]
+      if (spread.elements.length > 0) {
+        if (!confirm("Delete this spread and its content?")) return
+      }
+
+      // Delete associated media
+      const mediaToDelete: string[] = []
+      if (spread.leftBackgroundMediaId) mediaToDelete.push(spread.leftBackgroundMediaId)
+      if (spread.rightBackgroundMediaId) mediaToDelete.push(spread.rightBackgroundMediaId)
+      if (spread.fullSpreadBackgroundMediaId) mediaToDelete.push(spread.fullSpreadBackgroundMediaId)
+      for (const el of spread.elements) {
+        if (el.type === "image") {
+          const content = el.content as ImageContent
+          if (content.mediaId) mediaToDelete.push(content.mediaId)
+        }
+      }
+      for (const mid of mediaToDelete) {
+        deleteMedia(mid)
+      }
+
+      setBrochure((prev) => {
+        if (!prev) return prev
+        const filtered = prev.spreads.filter((_, i) => i !== index)
+        // Regenerate all page labels
+        const newSpreads = filtered.map((s, i) => {
+          const l = generatePageLabels(i)
+          return { ...s, spreadIndex: i, leftPageLabel: l.left, rightPageLabel: l.right }
+        })
+        markDirty()
+        return { ...prev, spreads: newSpreads }
+      })
+
+      // Adjust current index if needed
+      setCurrentSpreadIndex((prev) => {
+        if (prev >= index && prev > 0) return prev - 1
+        return prev
+      })
+    },
+    [brochure, markDirty]
+  )
+
+  // --- Background handlers ---
+  const handleBackgroundUpload = useCallback(
+    async (file: File, target: "left" | "right" | "full") => {
+      const validation = validateImageFile(file)
+      if (!validation.valid) {
+        alert(validation.error)
+        return
+      }
+
+      const mediaId = generateId()
+      await saveMedia({
+        id: mediaId,
+        brochureId: id,
+        blob: file,
+        mimeType: file.type,
+        createdAt: new Date().toISOString(),
+      })
+
+      const url = URL.createObjectURL(file)
+      setMediaUrls((prev) => ({ ...prev, [mediaId]: url }))
+
+      setBrochure((prev) => {
+        if (!prev) return prev
+        const spreadIdx = currentSpreadIndex
+        const newSpreads = prev.spreads.map((s, i) => {
+          if (i !== spreadIdx) return s
+          if (target === "full") {
+            return {
+              ...s,
+              fullSpreadBackgroundMediaId: mediaId,
+              leftBackgroundMediaId: null,
+              rightBackgroundMediaId: null,
+            }
+          } else if (target === "left") {
+            return {
+              ...s,
+              leftBackgroundMediaId: mediaId,
+              fullSpreadBackgroundMediaId: null,
+            }
+          } else {
+            return {
+              ...s,
+              rightBackgroundMediaId: mediaId,
+              fullSpreadBackgroundMediaId: null,
+            }
+          }
+        })
+        markDirty()
+        return { ...prev, spreads: newSpreads }
+      })
+    },
+    [id, currentSpreadIndex, markDirty]
+  )
+
+  const handleRemoveBackground = useCallback(
+    (target: "left" | "right" | "full") => {
+      setBrochure((prev) => {
+        if (!prev) return prev
+        const spreadIdx = currentSpreadIndex
+        const spread = prev.spreads[spreadIdx]
+        let mediaIdToRemove: string | null = null
+
+        if (target === "full") mediaIdToRemove = spread.fullSpreadBackgroundMediaId
+        else if (target === "left") mediaIdToRemove = spread.leftBackgroundMediaId
+        else mediaIdToRemove = spread.rightBackgroundMediaId
+
+        if (mediaIdToRemove) deleteMedia(mediaIdToRemove)
+
+        const newSpreads = prev.spreads.map((s, i) => {
+          if (i !== spreadIdx) return s
+          if (target === "full") return { ...s, fullSpreadBackgroundMediaId: null }
+          if (target === "left") return { ...s, leftBackgroundMediaId: null }
+          return { ...s, rightBackgroundMediaId: null }
+        })
+        markDirty()
+        return { ...prev, spreads: newSpreads }
+      })
+    },
+    [currentSpreadIndex, markDirty]
+  )
+
+  // --- Settings dialog ---
+  const openSettings = useCallback(() => {
+    if (!brochure) return
+    setSettingsTitle(brochure.title)
+    setSettingsSlug(brochure.slug)
+    setSettingsSlugManual(false)
+    setSettingsDescription(brochure.description)
+    setSettingsPassword("")
+    setSettingsHasPassword(!!brochure.passwordHash)
+    setSettingsSlugError("")
+    setSettingsOpen(true)
+  }, [brochure])
+
+  const handleSettingsTitleChange = useCallback(
+    (val: string) => {
+      setSettingsTitle(val)
+      if (!settingsSlugManual) {
+        setSettingsSlug(slugify(val) + "-" + id.slice(0, 8))
+      }
+    },
+    [settingsSlugManual, id]
+  )
+
+  const handleSettingsSlugChange = useCallback((val: string) => {
+    setSettingsSlugManual(true)
+    setSettingsSlug(val)
+    setSettingsSlugError("")
+  }, [])
+
+  const handleSetPassword = useCallback(async () => {
+    if (!settingsPassword) return
+    const hash = await hashPassword(settingsPassword)
+    setBrochure((prev) => (prev ? { ...prev, passwordHash: hash } : prev))
+    setSettingsHasPassword(true)
+    setSettingsPassword("")
+    markDirty()
+  }, [settingsPassword, markDirty])
+
+  const handleSaveSettings = useCallback(async () => {
+    if (!brochure) return
+
+    // Check slug uniqueness
+    const index = getIndex()
+    const duplicate = index.find((b) => b.slug === settingsSlug && b.id !== brochure.id)
+    if (duplicate) {
+      setSettingsSlugError("This URL is already in use")
+      return
+    }
+
+    setBrochure((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        title: settingsTitle,
+        slug: settingsSlug,
+        description: settingsDescription,
+      }
+    })
+    markDirty()
+    setSettingsOpen(false)
+  }, [brochure, settingsTitle, settingsSlug, settingsDescription, markDirty])
 
   // --- Keyboard shortcuts ---
   useEffect(() => {
@@ -768,21 +1002,21 @@ export default function EditorPage() {
         return
       }
 
-      // Ctrl+Z / Cmd+Z → undo
+      // Ctrl+Z / Cmd+Z -> undo
       if (mod && !e.shiftKey && e.key === "z") {
         e.preventDefault()
         historyRef.current.undo()
         forceRender()
         return
       }
-      // Ctrl+Shift+Z / Cmd+Shift+Z → redo
+      // Ctrl+Shift+Z / Cmd+Shift+Z -> redo
       if (mod && e.shiftKey && e.key === "z") {
         e.preventDefault()
         historyRef.current.redo()
         forceRender()
         return
       }
-      // Delete / Backspace → delete selected
+      // Delete / Backspace -> delete selected
       if (e.key === "Delete" || e.key === "Backspace") {
         if (selectedElementId) {
           e.preventDefault()
@@ -790,7 +1024,7 @@ export default function EditorPage() {
         }
         return
       }
-      // Ctrl+D / Cmd+D → duplicate
+      // Ctrl+D / Cmd+D -> duplicate
       if (mod && e.key === "d") {
         e.preventDefault()
         handleDuplicate()
@@ -848,6 +1082,15 @@ export default function EditorPage() {
         />
 
         <div className="flex-1" />
+
+        {/* Settings button */}
+        <button
+          onClick={openSettings}
+          className="p-1.5 text-zinc-400 hover:text-zinc-100 transition-colors"
+          title="Brochure Settings"
+        >
+          <Settings className="w-4 h-4" />
+        </button>
 
         {/* Undo / Redo */}
         <button
@@ -913,7 +1156,7 @@ export default function EditorPage() {
         </button>
       </div>
 
-      {/* Formatting toolbar — shown when a text element is selected */}
+      {/* Formatting toolbar -- shown when a text element is selected */}
       {selectedElement && selectedElement.type === "text" && (
         <div className="flex justify-center py-1 bg-zinc-950 border-b border-zinc-800 shrink-0">
           <Toolbar
@@ -926,7 +1169,7 @@ export default function EditorPage() {
       {/* Main area */}
       <div className="flex-1 flex min-h-0">
         {/* Left sidebar */}
-        <div className="w-56 border-r border-zinc-800 p-4 flex flex-col gap-2 shrink-0">
+        <div className="w-56 border-r border-zinc-800 p-4 flex flex-col gap-2 shrink-0 overflow-y-auto">
           <p className="text-xs text-zinc-500 uppercase tracking-wider mb-2">Tools</p>
           <button
             onClick={handleInsertText}
@@ -949,10 +1192,106 @@ export default function EditorPage() {
             onChange={handleFileChange}
             className="hidden"
           />
-          <button className="flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800 rounded transition-colors w-full text-left">
+
+          {/* Backgrounds section */}
+          <button
+            onClick={() => setBgSectionOpen((o) => !o)}
+            className="flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800 rounded transition-colors w-full text-left"
+          >
             <Palette className="w-4 h-4" />
             Backgrounds
           </button>
+
+          {bgSectionOpen && (
+            <div className="pl-2 flex flex-col gap-2">
+              {/* Left Page BG */}
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => leftBgInputRef.current?.click()}
+                  className="text-xs text-zinc-400 hover:text-zinc-200 bg-zinc-800 rounded px-2 py-1 flex-1 text-left truncate"
+                >
+                  {currentSpread.leftBackgroundMediaId ? "Left BG Set" : "Left Page BG"}
+                </button>
+                {currentSpread.leftBackgroundMediaId && (
+                  <button
+                    onClick={() => handleRemoveBackground("left")}
+                    className="p-0.5 text-zinc-500 hover:text-red-400"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+              <input
+                ref={leftBgInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) handleBackgroundUpload(f, "left")
+                  e.target.value = ""
+                }}
+              />
+
+              {/* Right Page BG */}
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => rightBgInputRef.current?.click()}
+                  className="text-xs text-zinc-400 hover:text-zinc-200 bg-zinc-800 rounded px-2 py-1 flex-1 text-left truncate"
+                >
+                  {currentSpread.rightBackgroundMediaId ? "Right BG Set" : "Right Page BG"}
+                </button>
+                {currentSpread.rightBackgroundMediaId && (
+                  <button
+                    onClick={() => handleRemoveBackground("right")}
+                    className="p-0.5 text-zinc-500 hover:text-red-400"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+              <input
+                ref={rightBgInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) handleBackgroundUpload(f, "right")
+                  e.target.value = ""
+                }}
+              />
+
+              {/* Full Spread BG */}
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => fullBgInputRef.current?.click()}
+                  className="text-xs text-zinc-400 hover:text-zinc-200 bg-zinc-800 rounded px-2 py-1 flex-1 text-left truncate"
+                >
+                  {currentSpread.fullSpreadBackgroundMediaId ? "Full BG Set" : "Full Spread BG"}
+                </button>
+                {currentSpread.fullSpreadBackgroundMediaId && (
+                  <button
+                    onClick={() => handleRemoveBackground("full")}
+                    className="p-0.5 text-zinc-500 hover:text-red-400"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+              <input
+                ref={fullBgInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) handleBackgroundUpload(f, "full")
+                  e.target.value = ""
+                }}
+              />
+            </div>
+          )}
         </div>
 
         {/* Center canvas */}
@@ -1002,10 +1341,100 @@ export default function EditorPage() {
         </div>
       </div>
 
-      {/* Bottom bar */}
-      <div className="h-24 border-t border-zinc-800 px-4 flex items-center shrink-0">
-        <p className="text-xs text-zinc-500">Spreads</p>
+      {/* Bottom bar — Spread Strip */}
+      <div className="border-t border-zinc-800 shrink-0">
+        <SpreadStrip
+          spreads={brochure.spreads}
+          currentIndex={currentSpreadIndex}
+          onSelect={setCurrentSpreadIndex}
+          onAdd={handleAddSpread}
+          onRemove={handleRemoveSpread}
+        />
       </div>
+
+      {/* Settings Dialog */}
+      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+        <DialogContent className="sm:max-w-md bg-zinc-900 text-zinc-100 border border-zinc-700">
+          <DialogHeader>
+            <DialogTitle>Brochure Settings</DialogTitle>
+            <DialogDescription>
+              Configure title, URL, password and description.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex flex-col gap-4 py-2">
+            {/* Title */}
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-zinc-400">Title</label>
+              <input
+                type="text"
+                value={settingsTitle}
+                onChange={(e) => handleSettingsTitleChange(e.target.value)}
+                className="bg-zinc-800 border border-zinc-700 rounded px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-zinc-500"
+              />
+            </div>
+
+            {/* Slug */}
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-zinc-400">URL Slug</label>
+              <input
+                type="text"
+                value={settingsSlug}
+                onChange={(e) => handleSettingsSlugChange(e.target.value)}
+                className="bg-zinc-800 border border-zinc-700 rounded px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-zinc-500"
+              />
+              <p className="text-[10px] text-zinc-500">/brochures/{settingsSlug}</p>
+              {settingsSlugError && (
+                <p className="text-[10px] text-red-400">{settingsSlugError}</p>
+              )}
+            </div>
+
+            {/* Password */}
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-zinc-400 flex items-center gap-1.5">
+                Password
+                {settingsHasPassword && <Check className="w-3 h-3 text-green-400" />}
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={settingsPassword}
+                  onChange={(e) => setSettingsPassword(e.target.value)}
+                  placeholder={settingsHasPassword ? "Change password..." : "Set a password..."}
+                  className="flex-1 bg-zinc-800 border border-zinc-700 rounded px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-zinc-500"
+                />
+                <button
+                  onClick={handleSetPassword}
+                  disabled={!settingsPassword}
+                  className="px-3 py-1.5 bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 rounded text-xs text-zinc-200 transition-colors"
+                >
+                  Set
+                </button>
+              </div>
+            </div>
+
+            {/* Description */}
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-zinc-400">Description</label>
+              <textarea
+                value={settingsDescription}
+                onChange={(e) => setSettingsDescription(e.target.value)}
+                rows={3}
+                className="bg-zinc-800 border border-zinc-700 rounded px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-zinc-500 resize-none"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <button
+              onClick={handleSaveSettings}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm font-medium transition-colors"
+            >
+              Save Settings
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
