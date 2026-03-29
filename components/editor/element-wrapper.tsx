@@ -3,8 +3,9 @@
 import React, { useCallback, useRef, useState } from "react"
 import { Lock } from "lucide-react"
 import { GRID_SIZE } from "@/lib/constants"
-import { sanitizeHtml } from "@/lib/sanitize"
 import type { BrochureElement, TextContent, ImageContent } from "@/lib/types"
+import TextElement from "./text-element"
+import ImageElement from "./image-element"
 
 interface ElementWrapperProps {
   element: BrochureElement
@@ -219,45 +220,24 @@ export default function ElementWrapper({
     [onSelect]
   )
 
-  // Content rendering
-  // All user-generated HTML is sanitized with DOMPurify via sanitizeHtml() before rendering
+  // Content rendering — delegates to dedicated sub-components
   let contentNode: React.ReactNode = null
   if (element.type === "text") {
     const content = element.content as TextContent
-    const sanitized = sanitizeHtml(content.html)
     contentNode = (
-      <div
-        style={{
-          fontFamily: content.fontFamily,
-          fontSize: `${content.fontSize}px`,
-          color: content.color,
-          fontWeight: content.fontWeight,
-          textAlign: content.alignment as React.CSSProperties["textAlign"],
-          lineHeight: content.lineHeight,
-          letterSpacing: `${content.letterSpacing}px`,
-          opacity: content.opacity,
-          width: "100%",
-          height: "100%",
-          overflow: "hidden",
-        }}
-        dangerouslySetInnerHTML={{ __html: sanitized }}
+      <TextElement
+        content={content}
+        selected={selected}
+        onContentChange={(c) => onUpdate({ content: c })}
       />
     )
   } else if (element.type === "image") {
     const content = element.content as ImageContent
-    const src = mediaUrls[content.mediaId]
-    contentNode = src ? (
-      <img
-        src={src}
-        alt=""
-        className="w-full h-full pointer-events-none"
-        style={{ objectFit: content.objectFit }}
-        draggable={false}
+    contentNode = (
+      <ImageElement
+        content={content}
+        mediaUrl={mediaUrls[content.mediaId] ?? null}
       />
-    ) : (
-      <div className="w-full h-full bg-zinc-700 flex items-center justify-center text-zinc-400 text-xs">
-        No image
-      </div>
     )
   }
 

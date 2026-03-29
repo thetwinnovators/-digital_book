@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
 import {
@@ -14,9 +14,11 @@ import {
 } from "lucide-react"
 import { isAuthenticated } from "@/lib/auth"
 import { getBrochureById } from "@/lib/brochure-store"
-import { getMediaUrl } from "@/lib/media-store"
-import type { Brochure, BrochureElement, ImageContent } from "@/lib/types"
+import { getMediaUrl, saveMedia, validateImageFile } from "@/lib/media-store"
+import { generateId } from "@/lib/utils"
+import type { Brochure, BrochureElement, ImageContent, TextContent } from "@/lib/types"
 import EditorCanvas from "@/components/editor/editor-canvas"
+import Toolbar from "@/components/editor/toolbar"
 
 export default function EditorPage() {
   const params = useParams()
@@ -119,6 +121,110 @@ export default function EditorPage() {
     setBrochure((prev) => (prev ? { ...prev, title: newTitle } : prev))
   }, [])
 
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleInsertText = useCallback(() => {
+    setBrochure((prev) => {
+      if (!prev) return prev
+      const spread = prev.spreads[currentSpreadIndex]
+      const newElement: BrochureElement = {
+        id: generateId(),
+        type: "text",
+        x: 210,
+        y: 300,
+        width: 300,
+        height: 100,
+        rotation: 0,
+        zIndex: spread.elements.length,
+        locked: false,
+        content: {
+          html: "",
+          fontFamily: "Inter",
+          fontSize: 16,
+          color: "#ffffff",
+          fontWeight: "400",
+          alignment: "left",
+          lineHeight: 1.5,
+          letterSpacing: 0,
+          opacity: 1,
+        } satisfies TextContent,
+      }
+      const newSpreads = prev.spreads.map((s, idx) => {
+        if (idx !== currentSpreadIndex) return s
+        return { ...s, elements: [...s.elements, newElement] }
+      })
+      setSelectedElementId(newElement.id)
+      return { ...prev, spreads: newSpreads }
+    })
+  }, [currentSpreadIndex])
+
+  const handleInsertImage = useCallback(() => {
+    fileInputRef.current?.click()
+  }, [])
+
+  const handleFileChange = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0]
+      if (!file) return
+      // Reset so the same file can be picked again
+      e.target.value = ""
+
+      const validation = validateImageFile(file)
+      if (!validation.valid) {
+        alert(validation.error)
+        return
+      }
+
+      const mediaId = generateId()
+      await saveMedia({
+        id: mediaId,
+        brochureId: id,
+        blob: file,
+        mimeType: file.type,
+        createdAt: new Date().toISOString(),
+      })
+
+      // Create object URL for immediate display
+      const url = URL.createObjectURL(file)
+      setMediaUrls((prev) => ({ ...prev, [mediaId]: url }))
+
+      setBrochure((prev) => {
+        if (!prev) return prev
+        const spread = prev.spreads[currentSpreadIndex]
+        const newElement: BrochureElement = {
+          id: generateId(),
+          type: "image",
+          x: 210,
+          y: 300,
+          width: 300,
+          height: 200,
+          rotation: 0,
+          zIndex: spread.elements.length,
+          locked: false,
+          content: {
+            mediaId,
+            objectFit: "cover",
+          } satisfies ImageContent,
+        }
+        const newSpreads = prev.spreads.map((s, idx) => {
+          if (idx !== currentSpreadIndex) return s
+          return { ...s, elements: [...s.elements, newElement] }
+        })
+        setSelectedElementId(newElement.id)
+        return { ...prev, spreads: newSpreads }
+      })
+    },
+    [id, currentSpreadIndex]
+  )
+
+  const handleToolbarChange = useCallback(
+    (newContent: TextContent) => {
+      if (!selectedElementId) return
+      handleUpdateElement(selectedElementId, { content: newContent })
+    },
+    [selectedElementId, handleUpdateElement]
+  )
+
   if (!brochure) {
     return (
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
@@ -129,6 +235,10 @@ export default function EditorPage() {
 
   const currentSpread = brochure.spreads[currentSpreadIndex]
   const totalSpreads = brochure.spreads.length
+
+  const selectedElement = selectedElementId
+    ? currentSpread.elements.find((el) => el.id === selectedElementId) ?? null
+    : null
 
   // Spread label: first spread is "Cover", rest are "Pages N-M"
   let spreadLabel: string
@@ -193,19 +303,42 @@ export default function EditorPage() {
         </button>
       </div>
 
+      {/* Formatting toolbar — shown when a text element is selected */}
+      {selectedElement && selectedElement.type === "text" && (
+        <div className="flex justify-center py-1 bg-zinc-950 border-b border-zinc-800 shrink-0">
+          <Toolbar
+            content={selectedElement.content as TextContent}
+            onChange={handleToolbarChange}
+          />
+        </div>
+      )}
+
       {/* Main area */}
       <div className="flex-1 flex min-h-0">
         {/* Left sidebar */}
         <div className="w-56 border-r border-zinc-800 p-4 flex flex-col gap-2 shrink-0">
           <p className="text-xs text-zinc-500 uppercase tracking-wider mb-2">Tools</p>
-          <button className="flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800 rounded transition-colors w-full text-left">
+          <button
+            onClick={handleInsertText}
+            className="flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800 rounded transition-colors w-full text-left"
+          >
             <Type className="w-4 h-4" />
             Insert Text
           </button>
-          <button className="flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800 rounded transition-colors w-full text-left">
+          <button
+            onClick={handleInsertImage}
+            className="flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800 rounded transition-colors w-full text-left"
+          >
             <Image className="w-4 h-4" />
             Insert Image
           </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleFileChange}
+            className="hidden"
+          />
           <button className="flex items-center gap-2 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800 rounded transition-colors w-full text-left">
             <Palette className="w-4 h-4" />
             Backgrounds
