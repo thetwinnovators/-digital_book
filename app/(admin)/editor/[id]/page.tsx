@@ -11,14 +11,20 @@ import {
   Type,
   Image,
   Palette,
+  Undo2,
+  Redo2,
 } from "lucide-react"
 import { isAuthenticated } from "@/lib/auth"
-import { getBrochureById } from "@/lib/brochure-store"
+import { getBrochureById, saveBrochure } from "@/lib/brochure-store"
 import { getMediaUrl, saveMedia, validateImageFile } from "@/lib/media-store"
 import { generateId } from "@/lib/utils"
+import { extractSearchText } from "@/lib/search"
+import { AUTOSAVE_INTERVAL_MS } from "@/lib/constants"
 import type { Brochure, BrochureElement, ImageContent, TextContent } from "@/lib/types"
 import EditorCanvas from "@/components/editor/editor-canvas"
 import Toolbar from "@/components/editor/toolbar"
+import LayerPanel from "@/components/editor/layer-panel"
+import { HistoryManager } from "@/components/editor/history"
 
 export default function EditorPage() {
   const params = useParams()
@@ -29,6 +35,18 @@ export default function EditorPage() {
   const [currentSpreadIndex, setCurrentSpreadIndex] = useState(0)
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null)
   const [mediaUrls, setMediaUrls] = useState<Record<string, string>>({})
+  // Counter to force re-render after undo/redo
+  const [, setRenderTick] = useState(0)
+  const forceRender = useCallback(() => setRenderTick((t) => t + 1), [])
+
+  const historyRef = useRef(new HistoryManager())
+  const isDirtyRef = useRef(false)
+  const [saveStatus, setSaveStatus] = useState<"saved" | "unsaved">("saved")
+
+  const markDirty = useCallback(() => {
+    isDirtyRef.current = true
+    setSaveStatus("unsaved")
+  }, [])
 
   // Auth guard
   useEffect(() => {
@@ -94,39 +112,142 @@ export default function EditorPage() {
     }
   }, [brochure])
 
+  // --- Save logic ---
+  const performSave = useCallback(async () => {
+    if (!brochure) return
+    const now = new Date().toISOString()
+    const searchText = extractSearchText(brochure)
+    const firstSpread = brochure.spreads[0]
+    const coverThumbnailMediaId =
+      firstSpread?.fullSpreadBackgroundMediaId ||
+      firstSpread?.leftBackgroundMediaId ||
+      null
+    const updated: Brochure = {
+      ...brochure,
+      searchText,
+      updatedAt: now,
+      coverThumbnailMediaId,
+    }
+    await saveBrochure(updated)
+    setBrochure(updated)
+    isDirtyRef.current = false
+    setSaveStatus("saved")
+  }, [brochure])
+
+  // Autosave interval
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (isDirtyRef.current) {
+        performSave()
+      }
+    }, AUTOSAVE_INTERVAL_MS)
+    return () => clearInterval(timer)
+  }, [performSave])
+
+  // Beforeunload warning
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (isDirtyRef.current) {
+        e.preventDefault()
+        e.returnValue = ""
+      }
+    }
+    window.addEventListener("beforeunload", handler)
+    return () => window.removeEventListener("beforeunload", handler)
+  }, [])
+
+  // --- Element mutation with history ---
   const handleUpdateElement = useCallback(
     (elementId: string, updates: Partial<BrochureElement>) => {
       setBrochure((prev) => {
         if (!prev) return prev
+        const spreadIdx = currentSpreadIndex
+        const oldElement = prev.spreads[spreadIdx]?.elements.find(
+          (el) => el.id === elementId
+        )
+        if (!oldElement) return prev
+
+        const snapshot = { ...oldElement }
+        const newElement = { ...oldElement, ...updates }
+
+        historyRef.current.push({
+          undo: () => {
+            setBrochure((p) => {
+              if (!p) return p
+              return {
+                ...p,
+                spreads: p.spreads.map((s, i) =>
+                  i !== spreadIdx
+                    ? s
+                    : {
+                        ...s,
+                        elements: s.elements.map((el) =>
+                          el.id === elementId ? snapshot : el
+                        ),
+                      }
+                ),
+              }
+            })
+            markDirty()
+            forceRender()
+          },
+          redo: () => {
+            setBrochure((p) => {
+              if (!p) return p
+              return {
+                ...p,
+                spreads: p.spreads.map((s, i) =>
+                  i !== spreadIdx
+                    ? s
+                    : {
+                        ...s,
+                        elements: s.elements.map((el) =>
+                          el.id === elementId ? newElement : el
+                        ),
+                      }
+                ),
+              }
+            })
+            markDirty()
+            forceRender()
+          },
+        })
+
+        markDirty()
         const newSpreads = prev.spreads.map((spread, idx) => {
-          if (idx !== currentSpreadIndex) return spread
+          if (idx !== spreadIdx) return spread
           return {
             ...spread,
             elements: spread.elements.map((el) =>
-              el.id === elementId ? { ...el, ...updates } : el
+              el.id === elementId ? newElement : el
             ),
           }
         })
         return { ...prev, spreads: newSpreads }
       })
     },
-    [currentSpreadIndex]
+    [currentSpreadIndex, markDirty, forceRender]
   )
 
   const handleSelectElement = useCallback((elId: string | null) => {
     setSelectedElementId(elId)
   }, [])
 
-  const handleTitleChange = useCallback((newTitle: string) => {
-    setBrochure((prev) => (prev ? { ...prev, title: newTitle } : prev))
-  }, [])
+  const handleTitleChange = useCallback(
+    (newTitle: string) => {
+      setBrochure((prev) => (prev ? { ...prev, title: newTitle } : prev))
+      markDirty()
+    },
+    [markDirty]
+  )
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleInsertText = useCallback(() => {
     setBrochure((prev) => {
       if (!prev) return prev
-      const spread = prev.spreads[currentSpreadIndex]
+      const spreadIdx = currentSpreadIndex
+      const spread = prev.spreads[spreadIdx]
       const newElement: BrochureElement = {
         id: generateId(),
         type: "text",
@@ -149,14 +270,56 @@ export default function EditorPage() {
           opacity: 1,
         } satisfies TextContent,
       }
+
+      historyRef.current.push({
+        undo: () => {
+          setBrochure((p) => {
+            if (!p) return p
+            return {
+              ...p,
+              spreads: p.spreads.map((s, i) =>
+                i !== spreadIdx
+                  ? s
+                  : {
+                      ...s,
+                      elements: s.elements.filter(
+                        (el) => el.id !== newElement.id
+                      ),
+                    }
+              ),
+            }
+          })
+          setSelectedElementId(null)
+          markDirty()
+          forceRender()
+        },
+        redo: () => {
+          setBrochure((p) => {
+            if (!p) return p
+            return {
+              ...p,
+              spreads: p.spreads.map((s, i) =>
+                i !== spreadIdx
+                  ? s
+                  : { ...s, elements: [...s.elements, newElement] }
+              ),
+            }
+          })
+          setSelectedElementId(newElement.id)
+          markDirty()
+          forceRender()
+        },
+      })
+
+      markDirty()
       const newSpreads = prev.spreads.map((s, idx) => {
-        if (idx !== currentSpreadIndex) return s
+        if (idx !== spreadIdx) return s
         return { ...s, elements: [...s.elements, newElement] }
       })
       setSelectedElementId(newElement.id)
       return { ...prev, spreads: newSpreads }
     })
-  }, [currentSpreadIndex])
+  }, [currentSpreadIndex, markDirty, forceRender])
 
   const handleInsertImage = useCallback(() => {
     fileInputRef.current?.click()
@@ -190,7 +353,8 @@ export default function EditorPage() {
 
       setBrochure((prev) => {
         if (!prev) return prev
-        const spread = prev.spreads[currentSpreadIndex]
+        const spreadIdx = currentSpreadIndex
+        const spread = prev.spreads[spreadIdx]
         const newElement: BrochureElement = {
           id: generateId(),
           type: "image",
@@ -206,15 +370,57 @@ export default function EditorPage() {
             objectFit: "cover",
           } satisfies ImageContent,
         }
+
+        historyRef.current.push({
+          undo: () => {
+            setBrochure((p) => {
+              if (!p) return p
+              return {
+                ...p,
+                spreads: p.spreads.map((s, i) =>
+                  i !== spreadIdx
+                    ? s
+                    : {
+                        ...s,
+                        elements: s.elements.filter(
+                          (el) => el.id !== newElement.id
+                        ),
+                      }
+                ),
+              }
+            })
+            setSelectedElementId(null)
+            markDirty()
+            forceRender()
+          },
+          redo: () => {
+            setBrochure((p) => {
+              if (!p) return p
+              return {
+                ...p,
+                spreads: p.spreads.map((s, i) =>
+                  i !== spreadIdx
+                    ? s
+                    : { ...s, elements: [...s.elements, newElement] }
+                ),
+              }
+            })
+            setSelectedElementId(newElement.id)
+            markDirty()
+            forceRender()
+          },
+        })
+
+        markDirty()
         const newSpreads = prev.spreads.map((s, idx) => {
-          if (idx !== currentSpreadIndex) return s
+          if (idx !== spreadIdx) return s
           return { ...s, elements: [...s.elements, newElement] }
         })
         setSelectedElementId(newElement.id)
         return { ...prev, spreads: newSpreads }
       })
     },
-    [id, currentSpreadIndex]
+    [id, currentSpreadIndex, markDirty, forceRender]
   )
 
   const handleToolbarChange = useCallback(
@@ -224,6 +430,376 @@ export default function EditorPage() {
     },
     [selectedElementId, handleUpdateElement]
   )
+
+  // --- Layer panel handlers ---
+  const handleLayerReorder = useCallback(
+    (elementId: string, direction: "up" | "down") => {
+      setBrochure((prev) => {
+        if (!prev) return prev
+        const spreadIdx = currentSpreadIndex
+        const spread = prev.spreads[spreadIdx]
+        const sorted = [...spread.elements].sort((a, b) => a.zIndex - b.zIndex)
+        const idx = sorted.findIndex((el) => el.id === elementId)
+        if (idx === -1) return prev
+
+        const swapIdx = direction === "up" ? idx + 1 : idx - 1
+        if (swapIdx < 0 || swapIdx >= sorted.length) return prev
+
+        const targetEl = sorted[idx]
+        const swapEl = sorted[swapIdx]
+        const oldZA = targetEl.zIndex
+        const oldZB = swapEl.zIndex
+
+        historyRef.current.push({
+          undo: () => {
+            setBrochure((p) => {
+              if (!p) return p
+              return {
+                ...p,
+                spreads: p.spreads.map((s, i) =>
+                  i !== spreadIdx
+                    ? s
+                    : {
+                        ...s,
+                        elements: s.elements.map((el) => {
+                          if (el.id === targetEl.id)
+                            return { ...el, zIndex: oldZA }
+                          if (el.id === swapEl.id)
+                            return { ...el, zIndex: oldZB }
+                          return el
+                        }),
+                      }
+                ),
+              }
+            })
+            markDirty()
+            forceRender()
+          },
+          redo: () => {
+            setBrochure((p) => {
+              if (!p) return p
+              return {
+                ...p,
+                spreads: p.spreads.map((s, i) =>
+                  i !== spreadIdx
+                    ? s
+                    : {
+                        ...s,
+                        elements: s.elements.map((el) => {
+                          if (el.id === targetEl.id)
+                            return { ...el, zIndex: oldZB }
+                          if (el.id === swapEl.id)
+                            return { ...el, zIndex: oldZA }
+                          return el
+                        }),
+                      }
+                ),
+              }
+            })
+            markDirty()
+            forceRender()
+          },
+        })
+
+        markDirty()
+        return {
+          ...prev,
+          spreads: prev.spreads.map((s, i) =>
+            i !== spreadIdx
+              ? s
+              : {
+                  ...s,
+                  elements: s.elements.map((el) => {
+                    if (el.id === targetEl.id) return { ...el, zIndex: oldZB }
+                    if (el.id === swapEl.id) return { ...el, zIndex: oldZA }
+                    return el
+                  }),
+                }
+          ),
+        }
+      })
+    },
+    [currentSpreadIndex, markDirty, forceRender]
+  )
+
+  const handleToggleLock = useCallback(
+    (elId: string) => {
+      setBrochure((prev) => {
+        if (!prev) return prev
+        const spreadIdx = currentSpreadIndex
+        const el = prev.spreads[spreadIdx]?.elements.find(
+          (e) => e.id === elId
+        )
+        if (!el) return prev
+        const wasLocked = el.locked
+
+        historyRef.current.push({
+          undo: () => {
+            setBrochure((p) => {
+              if (!p) return p
+              return {
+                ...p,
+                spreads: p.spreads.map((s, i) =>
+                  i !== spreadIdx
+                    ? s
+                    : {
+                        ...s,
+                        elements: s.elements.map((e) =>
+                          e.id === elId ? { ...e, locked: wasLocked } : e
+                        ),
+                      }
+                ),
+              }
+            })
+            markDirty()
+            forceRender()
+          },
+          redo: () => {
+            setBrochure((p) => {
+              if (!p) return p
+              return {
+                ...p,
+                spreads: p.spreads.map((s, i) =>
+                  i !== spreadIdx
+                    ? s
+                    : {
+                        ...s,
+                        elements: s.elements.map((e) =>
+                          e.id === elId ? { ...e, locked: !wasLocked } : e
+                        ),
+                      }
+                ),
+              }
+            })
+            markDirty()
+            forceRender()
+          },
+        })
+
+        markDirty()
+        return {
+          ...prev,
+          spreads: prev.spreads.map((s, i) =>
+            i !== spreadIdx
+              ? s
+              : {
+                  ...s,
+                  elements: s.elements.map((e) =>
+                    e.id === elId ? { ...e, locked: !wasLocked } : e
+                  ),
+                }
+          ),
+        }
+      })
+    },
+    [currentSpreadIndex, markDirty, forceRender]
+  )
+
+  const handleDeleteElement = useCallback(
+    (elId: string) => {
+      setBrochure((prev) => {
+        if (!prev) return prev
+        const spreadIdx = currentSpreadIndex
+        const el = prev.spreads[spreadIdx]?.elements.find(
+          (e) => e.id === elId
+        )
+        if (!el || el.locked) return prev
+        const snapshot = { ...el }
+
+        historyRef.current.push({
+          undo: () => {
+            setBrochure((p) => {
+              if (!p) return p
+              return {
+                ...p,
+                spreads: p.spreads.map((s, i) =>
+                  i !== spreadIdx
+                    ? s
+                    : { ...s, elements: [...s.elements, snapshot] }
+                ),
+              }
+            })
+            setSelectedElementId(snapshot.id)
+            markDirty()
+            forceRender()
+          },
+          redo: () => {
+            setBrochure((p) => {
+              if (!p) return p
+              return {
+                ...p,
+                spreads: p.spreads.map((s, i) =>
+                  i !== spreadIdx
+                    ? s
+                    : {
+                        ...s,
+                        elements: s.elements.filter((e) => e.id !== elId),
+                      }
+                ),
+              }
+            })
+            setSelectedElementId(null)
+            markDirty()
+            forceRender()
+          },
+        })
+
+        markDirty()
+        if (selectedElementId === elId) setSelectedElementId(null)
+        return {
+          ...prev,
+          spreads: prev.spreads.map((s, i) =>
+            i !== spreadIdx
+              ? s
+              : { ...s, elements: s.elements.filter((e) => e.id !== elId) }
+          ),
+        }
+      })
+    },
+    [currentSpreadIndex, selectedElementId, markDirty, forceRender]
+  )
+
+  // --- Duplicate element ---
+  const handleDuplicate = useCallback(() => {
+    if (!brochure || !selectedElementId) return
+    const spreadIdx = currentSpreadIndex
+    const spread = brochure.spreads[spreadIdx]
+    const el = spread.elements.find((e) => e.id === selectedElementId)
+    if (!el) return
+    const newEl: BrochureElement = {
+      ...el,
+      id: generateId(),
+      x: el.x + 20,
+      y: el.y + 20,
+      zIndex: el.zIndex + 1,
+      content: { ...el.content },
+    }
+
+    historyRef.current.push({
+      undo: () => {
+        setBrochure((p) => {
+          if (!p) return p
+          return {
+            ...p,
+            spreads: p.spreads.map((s, i) =>
+              i !== spreadIdx
+                ? s
+                : {
+                    ...s,
+                    elements: s.elements.filter((e) => e.id !== newEl.id),
+                  }
+            ),
+          }
+        })
+        setSelectedElementId(el.id)
+        markDirty()
+        forceRender()
+      },
+      redo: () => {
+        setBrochure((p) => {
+          if (!p) return p
+          return {
+            ...p,
+            spreads: p.spreads.map((s, i) =>
+              i !== spreadIdx
+                ? s
+                : { ...s, elements: [...s.elements, newEl] }
+            ),
+          }
+        })
+        setSelectedElementId(newEl.id)
+        markDirty()
+        forceRender()
+      },
+    })
+
+    setBrochure((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        spreads: prev.spreads.map((s, i) =>
+          i !== spreadIdx
+            ? s
+            : { ...s, elements: [...s.elements, newEl] }
+        ),
+      }
+    })
+    setSelectedElementId(newEl.id)
+    markDirty()
+  }, [brochure, selectedElementId, currentSpreadIndex, markDirty, forceRender])
+
+  // --- Object-fit selector for image elements ---
+  const handleObjectFitChange = useCallback(
+    (fit: "cover" | "contain" | "fill") => {
+      if (!selectedElementId) return
+      handleUpdateElement(selectedElementId, {
+        content: { mediaId: "", objectFit: fit } as ImageContent,
+      })
+    },
+    [selectedElementId, handleUpdateElement]
+  )
+
+  // We need a better approach for object-fit: update just the content field
+  const handleImageObjectFit = useCallback(
+    (fit: "cover" | "contain" | "fill") => {
+      if (!brochure || !selectedElementId) return
+      const spread = brochure.spreads[currentSpreadIndex]
+      const el = spread.elements.find((e) => e.id === selectedElementId)
+      if (!el || el.type !== "image") return
+      const content = el.content as ImageContent
+      handleUpdateElement(selectedElementId, {
+        content: { ...content, objectFit: fit },
+      })
+    },
+    [brochure, selectedElementId, currentSpreadIndex, handleUpdateElement]
+  )
+
+  // --- Keyboard shortcuts ---
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey
+      const target = e.target as HTMLElement
+      // Don't intercept when typing in inputs
+      if (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable
+      ) {
+        return
+      }
+
+      // Ctrl+Z / Cmd+Z → undo
+      if (mod && !e.shiftKey && e.key === "z") {
+        e.preventDefault()
+        historyRef.current.undo()
+        forceRender()
+        return
+      }
+      // Ctrl+Shift+Z / Cmd+Shift+Z → redo
+      if (mod && e.shiftKey && e.key === "z") {
+        e.preventDefault()
+        historyRef.current.redo()
+        forceRender()
+        return
+      }
+      // Delete / Backspace → delete selected
+      if (e.key === "Delete" || e.key === "Backspace") {
+        if (selectedElementId) {
+          e.preventDefault()
+          handleDeleteElement(selectedElementId)
+        }
+        return
+      }
+      // Ctrl+D / Cmd+D → duplicate
+      if (mod && e.key === "d") {
+        e.preventDefault()
+        handleDuplicate()
+        return
+      }
+    }
+    window.addEventListener("keydown", handler)
+    return () => window.removeEventListener("keydown", handler)
+  }, [selectedElementId, handleDeleteElement, handleDuplicate, forceRender])
 
   if (!brochure) {
     return (
@@ -273,6 +849,32 @@ export default function EditorPage() {
 
         <div className="flex-1" />
 
+        {/* Undo / Redo */}
+        <button
+          onClick={() => {
+            historyRef.current.undo()
+            forceRender()
+          }}
+          disabled={!historyRef.current.canUndo}
+          className="p-1.5 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          title="Undo (Ctrl+Z)"
+        >
+          <Undo2 className="w-4 h-4" />
+        </button>
+        <button
+          onClick={() => {
+            historyRef.current.redo()
+            forceRender()
+          }}
+          disabled={!historyRef.current.canRedo}
+          className="p-1.5 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          title="Redo (Ctrl+Shift+Z)"
+        >
+          <Redo2 className="w-4 h-4" />
+        </button>
+
+        <div className="w-px h-6 bg-zinc-800" />
+
         {/* Spread navigator */}
         <div className="flex items-center gap-2">
           <button
@@ -296,8 +898,16 @@ export default function EditorPage() {
 
         <div className="w-px h-6 bg-zinc-800" />
 
-        {/* Save button (placeholder, wired in Task 17) */}
-        <button className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-sm font-medium transition-colors">
+        {/* Save status */}
+        <span className="text-xs text-zinc-500">
+          {saveStatus === "saved" ? "Saved" : "Unsaved changes"}
+        </span>
+
+        {/* Save button */}
+        <button
+          onClick={performSave}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-sm font-medium transition-colors"
+        >
           <Save className="w-4 h-4" />
           Save
         </button>
@@ -357,8 +967,38 @@ export default function EditorPage() {
         )}
 
         {/* Right sidebar */}
-        <div className="w-56 border-l border-zinc-800 p-4 shrink-0">
-          <p className="text-xs text-zinc-500 uppercase tracking-wider">Layers</p>
+        <div className="w-56 border-l border-zinc-800 p-4 shrink-0 overflow-y-auto">
+          <p className="text-xs text-zinc-500 uppercase tracking-wider mb-2">Layers</p>
+          <LayerPanel
+            elements={currentSpread.elements}
+            selectedId={selectedElementId}
+            onSelect={handleSelectElement}
+            onReorder={handleLayerReorder}
+            onToggleLock={handleToggleLock}
+            onDelete={handleDeleteElement}
+          />
+
+          {/* Object-fit selector for image elements */}
+          {selectedElement && selectedElement.type === "image" && (
+            <div className="mt-4 pt-4 border-t border-zinc-800">
+              <p className="text-xs text-zinc-500 uppercase tracking-wider mb-2">
+                Image Fit
+              </p>
+              <select
+                value={(selectedElement.content as ImageContent).objectFit}
+                onChange={(e) =>
+                  handleImageObjectFit(
+                    e.target.value as "cover" | "contain" | "fill"
+                  )
+                }
+                className="w-full bg-zinc-800 text-zinc-200 text-xs rounded px-2 py-1.5 border border-zinc-700 outline-none focus:border-zinc-500"
+              >
+                <option value="cover">Cover</option>
+                <option value="contain">Contain</option>
+                <option value="fill">Fill</option>
+              </select>
+            </div>
+          )}
         </div>
       </div>
 
