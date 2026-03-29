@@ -1,16 +1,20 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { useRouter } from "next/navigation"
 import { BrochureCard } from "@/components/brochure-card"
-import { getPublishedBrochures } from "@/lib/brochure-store"
+import { PasswordModal } from "@/components/password-modal"
+import { getPublishedBrochures, getBrochureById } from "@/lib/brochure-store"
 import { getMediaUrl } from "@/lib/media-store"
 import type { Brochure } from "@/lib/types"
 
 export default function GalleryPage() {
+  const router = useRouter()
   const [brochures, setBrochures] = useState<Brochure[]>([])
   const [coverUrls, setCoverUrls] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
-  const [selected, setSelected] = useState<Brochure | null>(null)
+  const [selectedBrochure, setSelectedBrochure] = useState<Brochure | null>(null)
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false)
 
   useEffect(() => {
     let urls: string[] = []
@@ -46,9 +50,16 @@ export default function GalleryPage() {
     }
   }, [])
 
-  function handleCardClick(brochure: Brochure) {
-    // Password modal will be added in Task 7
-    setSelected(brochure)
+  async function handleCardClick(brochure: Brochure) {
+    const full = await getBrochureById(brochure.id)
+    if (!full) return
+    setSelectedBrochure(full)
+    setPasswordModalOpen(true)
+  }
+
+  function handleUnlocked(brochure: Brochure) {
+    setPasswordModalOpen(false)
+    router.push("/brochures/" + brochure.slug)
   }
 
   if (loading) {
@@ -86,8 +97,12 @@ export default function GalleryPage() {
         ))}
       </div>
 
-      {/* Selected state — used by Task 7 password modal */}
-      {selected && null}
+      <PasswordModal
+        brochure={selectedBrochure}
+        open={passwordModalOpen}
+        onOpenChange={setPasswordModalOpen}
+        onUnlocked={handleUnlocked}
+      />
     </div>
   )
 }
