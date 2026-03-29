@@ -28,9 +28,6 @@ function HeaderInner() {
   const isAdmin = pathname.startsWith("/dashboard") || pathname.startsWith("/editor")
   const isReader = pathname.startsWith("/brochures/")
 
-  // Reader mode: return null for immersive experience
-  if (isReader) return null
-
   const initialQuery = searchParams.get("q") || ""
 
   function handleSearch(query: string) {
@@ -59,6 +56,9 @@ function HeaderInner() {
     }
     return searchBrochures(query, brochureCacheRef.current)
   }, [])
+
+  // Reader mode: return null for immersive experience (after all hooks)
+  if (isReader) return null
 
   return (
     <header className="bg-zinc-950 border-b border-zinc-800 h-16 flex items-center px-4 md:px-8 gap-4">
