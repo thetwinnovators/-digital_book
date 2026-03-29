@@ -30,38 +30,34 @@ interface BookReaderProps {
 }
 
 /* ------------------------------------------------------------------ */
-/*  BookReader — custom spread viewer with CSS transitions             */
+/*  BookReader — CSS 3D leaf-based page flip                           */
 /* ------------------------------------------------------------------ */
 
 const BookReader = React.forwardRef<BookReaderHandle, BookReaderProps>(
   function BookReader({ brochure, initialSpread = 0, mediaUrls, onSpreadChange }, ref) {
     const containerRef = useRef<HTMLDivElement>(null)
     const [currentSpread, setCurrentSpread] = useState(initialSpread)
-    const [isAnimating, setIsAnimating] = useState(false)
-    const [direction, setDirection] = useState<"next" | "prev" | null>(null)
-    const [scale, setScale] = useState(1)
-    const reducedMotion = useRef(false)
     const currentSpreadRef = useRef(initialSpread)
-    const isAnimatingRef = useRef(false)
+    const [scale, setScale] = useState(1)
 
     const totalSpreads = brochure.spreads.length
 
-    /* ---------- prefers-reduced-motion ---------- */
-
-    useEffect(() => {
-      const mq = window.matchMedia("(prefers-reduced-motion: reduce)")
-      reducedMotion.current = mq.matches
-      const handler = (e: MediaQueryListEvent) => { reducedMotion.current = e.matches }
-      mq.addEventListener("change", handler)
-      return () => mq.removeEventListener("change", handler)
-    }, [])
+    // Track which leaves are flipped. Each "leaf" sits between two spreads.
+    // Leaf i is flipped when we've moved past spread i (i.e., currentSpread > i).
+    // We build leaves from consecutive spread pairs.
+    const [flippedSet, setFlippedSet] = useState<Set<number>>(() => {
+      const set = new Set<number>()
+      for (let i = 0; i < initialSpread; i++) set.add(i)
+      return set
+    })
+    const flippedSetRef = useRef(flippedSet)
 
     /* ---------- responsive scale ---------- */
 
     const recalcScale = useCallback(() => {
       const el = containerRef.current
       if (!el) return
-      const padding = 32 // min margin around the book
+      const padding = 32
       const availW = el.clientWidth - padding * 2
       const availH = el.clientHeight - padding * 2
       const s = Math.min(availW / CANVAS_WIDTH, availH / CANVAS_HEIGHT, 1)
@@ -74,31 +70,21 @@ const BookReader = React.forwardRef<BookReaderHandle, BookReaderProps>(
       return () => window.removeEventListener("resize", recalcScale)
     }, [recalcScale])
 
-    /* ---------- navigation ---------- */
+    /* ---------- navigation logic ---------- */
 
-    const goToSpread = useCallback((index: number, dir: "next" | "prev") => {
-      if (isAnimatingRef.current) return
+    const goToSpread = useCallback((index: number) => {
       if (index < 0 || index >= totalSpreads) return
+      if (index === currentSpreadRef.current) return
+
+      const newFlipped = new Set<number>()
+      // All leaves before the target spread are flipped
+      for (let i = 0; i < index; i++) newFlipped.add(i)
 
       currentSpreadRef.current = index
-
-      if (reducedMotion.current) {
-        setCurrentSpread(index)
-        onSpreadChange?.(index)
-        return
-      }
-
-      setDirection(dir)
-      setIsAnimating(true)
-      isAnimatingRef.current = true
-
-      setTimeout(() => {
-        setCurrentSpread(index)
-        onSpreadChange?.(index)
-        setDirection(null)
-        setIsAnimating(false)
-        isAnimatingRef.current = false
-      }, 600)
+      flippedSetRef.current = newFlipped
+      setCurrentSpread(index)
+      setFlippedSet(newFlipped)
+      onSpreadChange?.(index)
     }, [totalSpreads, onSpreadChange])
 
     /* ---------- imperative handle ---------- */
@@ -107,21 +93,17 @@ const BookReader = React.forwardRef<BookReaderHandle, BookReaderProps>(
       flipNext() {
         const cur = currentSpreadRef.current
         if (cur >= totalSpreads - 1) {
-          goToSpread(0, "next")
+          goToSpread(0) // wrap to cover
         } else {
-          goToSpread(cur + 1, "next")
+          goToSpread(cur + 1)
         }
       },
       flipPrev() {
         const cur = currentSpreadRef.current
-        if (cur > 0) {
-          goToSpread(cur - 1, "prev")
-        }
+        if (cur > 0) goToSpread(cur - 1)
       },
       flipToSpread(index: number) {
-        const cur = currentSpreadRef.current
-        if (index === cur) return
-        goToSpread(index, index > cur ? "next" : "prev")
+        goToSpread(index)
       },
       getCurrentSpread() {
         return currentSpreadRef.current
@@ -141,26 +123,28 @@ const BookReader = React.forwardRef<BookReaderHandle, BookReaderProps>(
       if (Math.abs(delta) > 50) {
         const cur = currentSpreadRef.current
         if (delta < 0) {
-          if (cur >= totalSpreads - 1) {
-            goToSpread(0, "next")
-          } else {
-            goToSpread(cur + 1, "next")
-          }
+          // Swipe left → next
+          goToSpread(cur >= totalSpreads - 1 ? 0 : cur + 1)
         } else {
-          if (cur > 0) {
-            goToSpread(cur - 1, "prev")
-          }
+          // Swipe right → prev
+          if (cur > 0) goToSpread(cur - 1)
         }
       }
     }, [totalSpreads, goToSpread])
 
-    /* ---------- animation class ---------- */
-
-    let animationClass = ""
-    if (direction === "next") animationClass = "animate-flip-next"
-    if (direction === "prev") animationClass = "animate-flip-prev"
-
     /* ---------- render ---------- */
+
+    // Build leaves: each leaf has a front face (spread i) and back face (spread i+1).
+    // The last spread doesn't need a leaf after it.
+    // Leaf 0: front = spread 0, back = spread 1
+    // Leaf 1: front = spread 1, back = spread 2
+    // etc.
+    // When leaf i is flipped (rotateY -180deg), the back face (spread i+1) becomes visible.
+
+    const leaves: { frontIndex: number; backIndex: number }[] = []
+    for (let i = 0; i < totalSpreads - 1; i++) {
+      leaves.push({ frontIndex: i, backIndex: i + 1 })
+    }
 
     return (
       <div
@@ -169,74 +153,87 @@ const BookReader = React.forwardRef<BookReaderHandle, BookReaderProps>(
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
       >
+        {/* Book container with perspective */}
         <div
-          className="relative"
-          style={{
-            width: CANVAS_WIDTH,
-            height: CANVAS_HEIGHT,
-            transform: `scale(${scale})`,
-            transformOrigin: "center center",
-          }}
+          className="book-container"
+          style={{ perspective: "2500px" }}
         >
-          {/* Current spread */}
           <div
-            className={`absolute inset-0 transition-transform transition-opacity duration-500 ease-in-out ${animationClass}`}
-            style={{ perspective: "1200px" }}
+            className="book"
+            style={{
+              width: CANVAS_WIDTH,
+              height: CANVAS_HEIGHT,
+              position: "relative",
+              transformStyle: "preserve-3d",
+              transform: `scale(${scale})`,
+              transformOrigin: "center center",
+              overflow: "hidden",
+            }}
           >
-            <SpreadRenderer
-              spread={brochure.spreads[currentSpread]}
-              mediaUrls={mediaUrls}
-            />
+            {/* Base layer: show the last visible spread (current) as background */}
+            <div style={{ position: "absolute", inset: 0, zIndex: 0 }}>
+              <SpreadRenderer
+                spread={brochure.spreads[currentSpread]}
+                mediaUrls={mediaUrls}
+              />
+            </div>
+
+            {/* Leaves stack — each leaf flips to reveal the next spread */}
+            {leaves.map((leaf, i) => {
+              const isFlipped = flippedSet.has(i)
+              // z-index: unflipped leaves stack highest-first (so leaf 0 is on top)
+              // flipped leaves stack lowest-first
+              const zIndex = isFlipped ? i + 1 : totalSpreads - i
+
+              return (
+                <div
+                  key={i}
+                  className="leaf"
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    transformOrigin: "left center",
+                    transformStyle: "preserve-3d",
+                    transition: "transform 1s cubic-bezier(0.645, 0.045, 0.355, 1)",
+                    transform: isFlipped ? "rotateY(-180deg)" : "rotateY(0deg)",
+                    zIndex,
+                  }}
+                >
+                  {/* Front face: shows spread[frontIndex] */}
+                  <div
+                    className="face-front"
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      backfaceVisibility: "hidden",
+                    }}
+                  >
+                    <SpreadRenderer
+                      spread={brochure.spreads[leaf.frontIndex]}
+                      mediaUrls={mediaUrls}
+                    />
+                  </div>
+
+                  {/* Back face: shows spread[backIndex] (mirrored) */}
+                  <div
+                    className="face-back"
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      backfaceVisibility: "hidden",
+                      transform: "rotateY(180deg)",
+                    }}
+                  >
+                    <SpreadRenderer
+                      spread={brochure.spreads[leaf.backIndex]}
+                      mediaUrls={mediaUrls}
+                    />
+                  </div>
+                </div>
+              )
+            })}
           </div>
         </div>
-
-        {/* CSS animations for realistic page flip effect */}
-        <style jsx>{`
-          .animate-flip-next {
-            animation: flipNext 600ms cubic-bezier(0.4, 0, 0.2, 1);
-            transform-style: preserve-3d;
-          }
-          .animate-flip-prev {
-            animation: flipPrev 600ms cubic-bezier(0.4, 0, 0.2, 1);
-            transform-style: preserve-3d;
-          }
-          @keyframes flipNext {
-            0% {
-              transform: perspective(1200px) rotateY(0deg);
-              filter: brightness(1);
-            }
-            40% {
-              transform: perspective(1200px) rotateY(-95deg) scale(0.95);
-              filter: brightness(0.6);
-            }
-            60% {
-              transform: perspective(1200px) rotateY(-95deg) scale(0.95);
-              filter: brightness(0.6);
-            }
-            100% {
-              transform: perspective(1200px) rotateY(0deg);
-              filter: brightness(1);
-            }
-          }
-          @keyframes flipPrev {
-            0% {
-              transform: perspective(1200px) rotateY(0deg);
-              filter: brightness(1);
-            }
-            40% {
-              transform: perspective(1200px) rotateY(95deg) scale(0.95);
-              filter: brightness(0.6);
-            }
-            60% {
-              transform: perspective(1200px) rotateY(95deg) scale(0.95);
-              filter: brightness(0.6);
-            }
-            100% {
-              transform: perspective(1200px) rotateY(0deg);
-              filter: brightness(1);
-            }
-          }
-        `}</style>
       </div>
     )
   },
