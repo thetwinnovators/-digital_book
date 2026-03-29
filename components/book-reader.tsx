@@ -41,6 +41,8 @@ const BookReader = React.forwardRef<BookReaderHandle, BookReaderProps>(
     const [direction, setDirection] = useState<"next" | "prev" | null>(null)
     const [scale, setScale] = useState(1)
     const reducedMotion = useRef(false)
+    const currentSpreadRef = useRef(initialSpread)
+    const isAnimatingRef = useRef(false)
 
     const totalSpreads = brochure.spreads.length
 
@@ -75,8 +77,10 @@ const BookReader = React.forwardRef<BookReaderHandle, BookReaderProps>(
     /* ---------- navigation ---------- */
 
     const goToSpread = useCallback((index: number, dir: "next" | "prev") => {
-      if (isAnimating) return
+      if (isAnimatingRef.current) return
       if (index < 0 || index >= totalSpreads) return
+
+      currentSpreadRef.current = index
 
       if (reducedMotion.current) {
         setCurrentSpread(index)
@@ -86,37 +90,41 @@ const BookReader = React.forwardRef<BookReaderHandle, BookReaderProps>(
 
       setDirection(dir)
       setIsAnimating(true)
+      isAnimatingRef.current = true
 
       setTimeout(() => {
         setCurrentSpread(index)
         onSpreadChange?.(index)
         setDirection(null)
         setIsAnimating(false)
-      }, 500) // match CSS transition duration
-    }, [isAnimating, totalSpreads, onSpreadChange])
+        isAnimatingRef.current = false
+      }, 600)
+    }, [totalSpreads, onSpreadChange])
 
     /* ---------- imperative handle ---------- */
 
     useImperativeHandle(ref, () => ({
       flipNext() {
-        if (currentSpread >= totalSpreads - 1) {
-          // Wrap to cover
+        const cur = currentSpreadRef.current
+        if (cur >= totalSpreads - 1) {
           goToSpread(0, "next")
         } else {
-          goToSpread(currentSpread + 1, "next")
+          goToSpread(cur + 1, "next")
         }
       },
       flipPrev() {
-        if (currentSpread > 0) {
-          goToSpread(currentSpread - 1, "prev")
+        const cur = currentSpreadRef.current
+        if (cur > 0) {
+          goToSpread(cur - 1, "prev")
         }
       },
       flipToSpread(index: number) {
-        if (index === currentSpread) return
-        goToSpread(index, index > currentSpread ? "next" : "prev")
+        const cur = currentSpreadRef.current
+        if (index === cur) return
+        goToSpread(index, index > cur ? "next" : "prev")
       },
       getCurrentSpread() {
-        return currentSpread
+        return currentSpreadRef.current
       },
     }))
 
@@ -131,21 +139,20 @@ const BookReader = React.forwardRef<BookReaderHandle, BookReaderProps>(
     const handleTouchEnd = useCallback((e: React.TouchEvent) => {
       const delta = e.changedTouches[0].clientX - touchStartX.current
       if (Math.abs(delta) > 50) {
+        const cur = currentSpreadRef.current
         if (delta < 0) {
-          // Swipe left → next
-          if (currentSpread >= totalSpreads - 1) {
+          if (cur >= totalSpreads - 1) {
             goToSpread(0, "next")
           } else {
-            goToSpread(currentSpread + 1, "next")
+            goToSpread(cur + 1, "next")
           }
         } else {
-          // Swipe right → prev
-          if (currentSpread > 0) {
-            goToSpread(currentSpread - 1, "prev")
+          if (cur > 0) {
+            goToSpread(cur - 1, "prev")
           }
         }
       }
-    }, [currentSpread, totalSpreads, goToSpread])
+    }, [totalSpreads, goToSpread])
 
     /* ---------- animation class ---------- */
 
@@ -183,23 +190,51 @@ const BookReader = React.forwardRef<BookReaderHandle, BookReaderProps>(
           </div>
         </div>
 
-        {/* CSS animations for page flip effect */}
+        {/* CSS animations for realistic page flip effect */}
         <style jsx>{`
           .animate-flip-next {
-            animation: flipNext 500ms ease-in-out;
+            animation: flipNext 600ms cubic-bezier(0.4, 0, 0.2, 1);
+            transform-style: preserve-3d;
           }
           .animate-flip-prev {
-            animation: flipPrev 500ms ease-in-out;
+            animation: flipPrev 600ms cubic-bezier(0.4, 0, 0.2, 1);
+            transform-style: preserve-3d;
           }
           @keyframes flipNext {
-            0% { transform: rotateY(0deg); opacity: 1; }
-            50% { transform: rotateY(-90deg); opacity: 0.5; }
-            100% { transform: rotateY(0deg); opacity: 1; }
+            0% {
+              transform: perspective(1200px) rotateY(0deg);
+              filter: brightness(1);
+            }
+            40% {
+              transform: perspective(1200px) rotateY(-95deg) scale(0.95);
+              filter: brightness(0.6);
+            }
+            60% {
+              transform: perspective(1200px) rotateY(-95deg) scale(0.95);
+              filter: brightness(0.6);
+            }
+            100% {
+              transform: perspective(1200px) rotateY(0deg);
+              filter: brightness(1);
+            }
           }
           @keyframes flipPrev {
-            0% { transform: rotateY(0deg); opacity: 1; }
-            50% { transform: rotateY(90deg); opacity: 0.5; }
-            100% { transform: rotateY(0deg); opacity: 1; }
+            0% {
+              transform: perspective(1200px) rotateY(0deg);
+              filter: brightness(1);
+            }
+            40% {
+              transform: perspective(1200px) rotateY(95deg) scale(0.95);
+              filter: brightness(0.6);
+            }
+            60% {
+              transform: perspective(1200px) rotateY(95deg) scale(0.95);
+              filter: brightness(0.6);
+            }
+            100% {
+              transform: perspective(1200px) rotateY(0deg);
+              filter: brightness(1);
+            }
           }
         `}</style>
       </div>
