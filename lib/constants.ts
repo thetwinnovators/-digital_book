@@ -1,0 +1,14 @@
+export const CANVAS_WIDTH = 1440
+export const CANVAS_HEIGHT = 812
+export const PAGE_WIDTH = 720
+export const PAGE_HEIGHT = 812
+export const GRID_SIZE = 20
+export const AUTOSAVE_INTERVAL_MS = 30_000
+export const SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000 // 24 hours
+export const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024 // 10MB
+export const SEARCH_DEBOUNCE_MS = 300
+export const NAV_OVERLAY_TIMEOUT_MS = 3000
+export const DEFAULT_SPREADS_COUNT = 5
+export const THUMBNAIL_COLUMNS_DESKTOP = 5
+export const THUMBNAIL_COLUMNS_TABLET = 2
+export const THUMBNAIL_COLUMNS_MOBILE = 1
