@@ -53,6 +53,9 @@ export default function TextElement({ content, selected, onContentChange }: Text
         width: "100%",
         height: "100%",
         overflow: "hidden",
+        overflowWrap: "break-word",
+        wordWrap: "break-word",
+        whiteSpace: "pre-wrap",
         outline: "none",
         cursor: selected ? "text" : "default",
       }}

@@ -85,8 +85,12 @@ const PageRenderer = React.forwardRef<HTMLDivElement, PageRendererProps>(
     return (
       <div
         ref={ref}
-        className={`relative overflow-hidden ${defaultBg}${className ? ` ${className}` : ""}`}
-        style={{ width: PAGE_WIDTH, height: PAGE_HEIGHT }}
+        className={`relative overflow-hidden ${spread.backgroundColor ? "" : defaultBg}${className ? ` ${className}` : ""}`}
+        style={{
+          width: PAGE_WIDTH,
+          height: PAGE_HEIGHT,
+          backgroundColor: spread.backgroundColor || undefined,
+        }}
       >
         {backgroundNode}
 
@@ -120,6 +124,10 @@ const PageRenderer = React.forwardRef<HTMLDivElement, PageRendererProps>(
               opacity: content.opacity,
               width: "100%",
               height: "100%",
+              overflow: "hidden",
+              overflowWrap: "break-word",
+              wordWrap: "break-word",
+              whiteSpace: "pre-wrap",
             }
 
             return (

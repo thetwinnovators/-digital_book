@@ -124,8 +124,9 @@ export default function EditorCanvas({
           height: CANVAS_HEIGHT,
           transform: `scale(${scale})`,
           transformOrigin: "top left",
+          backgroundColor: spread.backgroundColor || undefined,
         }}
-        className="relative bg-zinc-800"
+        className={`relative ${spread.backgroundColor ? "" : "bg-zinc-800"}`}
         onClick={handleCanvasClick}
       >
         {/* Backgrounds */}

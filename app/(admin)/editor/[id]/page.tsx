@@ -1050,6 +1050,7 @@ export default function EditorPage() {
         leftBackgroundMediaId: null,
         rightBackgroundMediaId: null,
         fullSpreadBackgroundMediaId: null,
+        backgroundColor: "",
         elements: [],
       }
       // Regenerate all page labels
@@ -1679,6 +1680,70 @@ export default function EditorPage() {
                   e.target.value = ""
                 }}
               />
+
+              {/* Background Color */}
+              <div className="flex items-center gap-2 mt-1">
+                <input
+                  type="color"
+                  value={currentSpread.backgroundColor || "#27272a"}
+                  onChange={(e) => {
+                    setBook((prev) => {
+                      if (!prev) return prev
+                      markDirty()
+                      return {
+                        ...prev,
+                        spreads: prev.spreads.map((s, i) =>
+                          i !== currentSpreadIndex ? s : { ...s, backgroundColor: e.target.value }
+                        ),
+                      }
+                    })
+                  }}
+                  className="w-6 h-6 rounded border border-zinc-700 cursor-pointer bg-transparent p-0"
+                />
+                <input
+                  type="text"
+                  value={currentSpread.backgroundColor || ""}
+                  placeholder="#27272a"
+                  onChange={(e) => {
+                    let v = e.target.value
+                    if (v && !v.startsWith("#")) v = "#" + v
+                    if (!v || /^#[0-9a-fA-F]{0,6}$/.test(v)) {
+                      setBook((prev) => {
+                        if (!prev) return prev
+                        markDirty()
+                        return {
+                          ...prev,
+                          spreads: prev.spreads.map((s, i) =>
+                            i !== currentSpreadIndex ? s : { ...s, backgroundColor: v }
+                          ),
+                        }
+                      })
+                    }
+                  }}
+                  className="bg-zinc-800 text-zinc-200 text-xs rounded px-2 py-1 border border-zinc-700 outline-none w-[72px] font-mono"
+                  maxLength={7}
+                />
+                <span className="text-xs text-zinc-500">BG Color</span>
+                {currentSpread.backgroundColor && (
+                  <button
+                    onClick={() => {
+                      setBook((prev) => {
+                        if (!prev) return prev
+                        markDirty()
+                        return {
+                          ...prev,
+                          spreads: prev.spreads.map((s, i) =>
+                            i !== currentSpreadIndex ? s : { ...s, backgroundColor: "" }
+                          ),
+                        }
+                      })
+                    }}
+                    className="p-0.5 text-zinc-500 hover:text-red-400"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
             </div>
           )}
 

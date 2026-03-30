@@ -91,6 +91,7 @@ export default function DashboardPage() {
         leftBackgroundMediaId: null,
         rightBackgroundMediaId: null,
         fullSpreadBackgroundMediaId: null,
+        backgroundColor: "",
         elements: [],
       }
     })

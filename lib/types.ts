@@ -28,6 +28,7 @@ export interface Spread {
   leftBackgroundMediaId: string | null
   rightBackgroundMediaId: string | null
   fullSpreadBackgroundMediaId: string | null
+  backgroundColor: string
   elements: BookElement[]
 }
 
